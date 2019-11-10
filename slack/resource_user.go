@@ -1,7 +1,6 @@
 package slack
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -40,6 +39,9 @@ func resourceUser() *schema.Resource {
 		// Update is optional
 		Update: resourceUserUpdate,
 		Delete: resourceUserDelete,
+		Importer: &schema.ResourceImporter{
+			State: resourceUserImporter,
+		},
 
 		Schema: map[string]*schema.Schema{
 			"email": &schema.Schema{
@@ -96,20 +98,22 @@ func resourceUserCreate(d *schema.ResourceData, meta interface{}) error {
 
 	d.SetId("")
 
+	// TODO: Check why it's not possible to send invatation through message body
 	var slackInvite = SlackInvite{
-		Email:    d.Get("email").(string),
-		RealName: d.Get("full_name").(string),
+		Email:    email,
+		RealName: fullName,
 	}
 
-	slackInviteBytes, err := json.Marshal(slackInvite)
+	// slackInviteBytes, err := json.Marshal(slackInvite)
 
-	if err != nil {
-		return err
-	}
+	// if err != nil {
+	// 	return err
+	// }
 
 	client := &http.Client{}
-	req, _ := http.NewRequest("POST", "https://slack.com/api/users.admin.invite?email="+url.QueryEscape(email)+"&real_name="+url.QueryEscape(fullName), bytes.NewBuffer(slackInviteBytes))
-	req.Header.Set("Content-Type", "application/json")
+	// req, _ := http.NewRequest("POST", "https://slack.com/api/users.admin.invite?email="+url.QueryEscape(email)+"&real_name="+url.QueryEscape(fullName), bytes.NewBuffer(slackInviteBytes))
+	req, _ := http.NewRequest("POST", "https://slack.com/api/users.admin.invite?email="+url.QueryEscape(slackInvite.Email)+"&real_name="+url.QueryEscape(slackInvite.RealName), nil)
+	// req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+config.Token)
 	res, errRsp := client.Do(req)
 
@@ -196,4 +200,27 @@ func resourceUserDelete(d *schema.ResourceData, meta interface{}) error {
 	}
 
 	return nil
+}
+
+// Allow importing using any key by email
+func resourceUserImporter(d *schema.ResourceData, meta interface{}) ([]*schema.ResourceData, error) {
+	config := meta.(*Config)
+
+	var slackMember, findError = findSlackMemberByAttribute(config, func(userListMember UserListMember) bool {
+		return userListMember.Profile.Email == d.Id()
+	})
+
+	if findError != nil {
+		return nil, findError
+	}
+
+	if slackMember == nil {
+		return nil, fmt.Errorf("Could not find slack user. Make sure the user exists: %s ", d.Id())
+	}
+
+	d.SetId(slackMember.Id)
+	d.Set("email", slackMember.Profile.Email)
+	d.Set("full_name", slackMember.RealName)
+
+	return []*schema.ResourceData{d}, nil
 }
