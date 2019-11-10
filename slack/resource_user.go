@@ -3,6 +3,7 @@ package slack
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -21,7 +22,7 @@ type UserListMember struct {
 	} `json:"profile"`
 }
 
-type UserListResponse struct {
+type SlackResponse struct {
 	Ok      bool             `json:"ok"`
 	Error   string           `json:"error"`
 	Members []UserListMember `json:"members"`
@@ -53,17 +54,25 @@ func resourceUser() *schema.Resource {
 	}
 }
 
-func findSlackMemberByAttribute(config *Config, eqAttributesFun func(userListMember UserListMember) bool) *UserListMember {
-	resp, err := http.Get("https://slack.com/api/users.list?token=" + config.Token)
+func findSlackMemberByAttribute(config *Config, eqAttributesFun func(userListMember UserListMember) bool) (*UserListMember, error) {
 
-	if err != nil {
-		log.Println("error GETing httpbin.org", err)
+	client := &http.Client{}
+	req, _ := http.NewRequest("GET", "https://slack.com/api/users.list", nil)
+	req.Header.Set("Authorization", "Bearer "+config.Token)
+	res, errRsp := client.Do(req)
+
+	if errRsp != nil {
+		return nil, errRsp
 	}
 
-	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body)
+	defer res.Body.Close()
+	body, err := ioutil.ReadAll(res.Body)
 
-	var userListResponse UserListResponse
+	if errRsp != nil {
+		return nil, err
+	}
+
+	var userListResponse SlackResponse
 	json.Unmarshal([]byte(body), &userListResponse)
 
 	if !userListResponse.Ok {
@@ -71,12 +80,12 @@ func findSlackMemberByAttribute(config *Config, eqAttributesFun func(userListMem
 	}
 
 	for _, member := range userListResponse.Members {
-		if eqAttributesFun(member) {
-			return &member
+		if eqAttributesFun(member) && !member.Deleted {
+			return &member, nil
 		}
 	}
 
-	return nil
+	return nil, nil
 }
 
 func resourceUserCreate(d *schema.ResourceData, meta interface{}) error {
@@ -99,23 +108,23 @@ func resourceUserCreate(d *schema.ResourceData, meta interface{}) error {
 	}
 
 	client := &http.Client{}
-	req, _ := http.NewRequest("POST", "https://slack.com/api/users.admin.invite?email="+email+"&full_name="+url.QueryEscape(fullName), bytes.NewBuffer(slackInviteBytes))
+	req, _ := http.NewRequest("POST", "https://slack.com/api/users.admin.invite?email="+url.QueryEscape(email)+"&real_name="+url.QueryEscape(fullName), bytes.NewBuffer(slackInviteBytes))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+config.Token)
 	res, errRsp := client.Do(req)
 
 	if errRsp != nil {
-		return nil
+		return errRsp
 	}
 
 	defer res.Body.Close()
 	body, err := ioutil.ReadAll(res.Body)
 
 	if err != nil {
-		return nil
+		return err
 	}
 
-	var inviteResponse UserListResponse
+	var inviteResponse SlackResponse
 	json.Unmarshal([]byte(body), &inviteResponse)
 
 	if !inviteResponse.Ok {
@@ -123,7 +132,7 @@ func resourceUserCreate(d *schema.ResourceData, meta interface{}) error {
 		return nil
 	}
 
-	var slackMember = findSlackMemberByAttribute(config, func(userListMember UserListMember) bool {
+	var slackMember, findError = findSlackMemberByAttribute(config, func(userListMember UserListMember) bool {
 		return userListMember.Profile.Email == slackInvite.Email
 	})
 
@@ -132,21 +141,21 @@ func resourceUserCreate(d *schema.ResourceData, meta interface{}) error {
 		// The create and update function should always return the read function to ensure the state is reflected in the terraform.state file
 		return resourceUserRead(d, meta)
 	} else {
-		return nil
+		return findError
 	}
 }
 
 func resourceUserRead(d *schema.ResourceData, meta interface{}) error {
 	config := meta.(*Config)
 
-	var slackMember = findSlackMemberByAttribute(config, func(userListMember UserListMember) bool {
+	var slackMember, findError = findSlackMemberByAttribute(config, func(userListMember UserListMember) bool {
 		return userListMember.Id == d.Id()
 	})
 
 	if slackMember == nil {
 		log.Println("Didn't found slackMember with id: ", d.Id())
 		d.SetId("")
-		return nil
+		return findError
 	}
 
 	d.Set("email", slackMember.Profile.Email)
@@ -161,5 +170,30 @@ func resourceUserUpdate(d *schema.ResourceData, meta interface{}) error {
 }
 
 func resourceUserDelete(d *schema.ResourceData, meta interface{}) error {
+	config := meta.(*Config)
+
+	client := &http.Client{}
+	req, _ := http.NewRequest("POST", "https://slack.com/api/users.admin.setInactive?user="+d.Id(), nil)
+	req.Header.Set("Authorization", "Bearer "+config.Token)
+	res, err := client.Do(req)
+
+	if err != nil {
+		return err
+	}
+
+	defer res.Body.Close()
+	body, err := ioutil.ReadAll(res.Body)
+
+	if err != nil {
+		return err
+	}
+
+	var setInactiveResponse SlackResponse
+	json.Unmarshal([]byte(body), &setInactiveResponse)
+
+	if !setInactiveResponse.Ok {
+		return fmt.Errorf("[ERROR] Error while trying delete user: %s", setInactiveResponse.Error)
+	}
+
 	return nil
 }
