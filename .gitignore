@@ -1,2 +1,5 @@
 terraform-provider-slack
 vendor/
+lock.json
+*.tfstate
+*.tfstate.backup
