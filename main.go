@@ -1,7 +1,7 @@
 package main
 
 import (
-	"./slack"
+	"github.com/ntropy-network/terraform-provider-slack/slack"
 	"github.com/hashicorp/terraform-plugin-sdk/plugin"
 	"github.com/hashicorp/terraform-plugin-sdk/terraform"
 )
